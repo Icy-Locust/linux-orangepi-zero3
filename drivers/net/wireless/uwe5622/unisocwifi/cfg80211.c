@@ -429,7 +429,7 @@ int sprdwl_init_fw(struct sprdwl_vif *vif)
 	if (!vif->ndev)
 		mac = vif->wdev.address;
 	else
-		mac = vif->ndev->dev_addr;
+		mac = (unsigned char *)vif->ndev->dev_addr;
 
 	if (sprdwl_open_fw(priv, &vif_ctx_id, vif->mode, mac)) {
 		wl_ndev_log(L_ERR, vif->ndev, "%s failed!\n", __func__);

@@ -1272,7 +1272,7 @@ static int geth_open(struct net_device *ndev)
     }
 
     sunxi_mac_init(priv->base, txmode, rxmode);
-    sunxi_set_umac(priv->base, ndev->dev_addr, 0);
+    sunxi_set_umac(priv->base, (unsigned char *)ndev->dev_addr, 0);
 
     memset(priv->dma_tx, 0, dma_desc_tx * sizeof(struct dma_desc));
     memset(priv->dma_rx, 0, dma_desc_rx * sizeof(struct dma_desc));
@@ -1718,7 +1718,7 @@ static int geth_set_mac_address(struct net_device *ndev, void *p)
 
 	eth_hw_addr_set(ndev, addr->sa_data);
 
-    sunxi_set_umac(priv->base, ndev->dev_addr, 0);
+    sunxi_set_umac(priv->base, (unsigned char *)ndev->dev_addr, 0);
 
     return 0;
 }

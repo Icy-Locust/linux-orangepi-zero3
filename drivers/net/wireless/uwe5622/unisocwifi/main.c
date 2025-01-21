@@ -944,12 +944,12 @@ static int sprdwl_set_mac(struct net_device *dev, void *addr)
 		if (!is_zero_ether_addr(sa->sa_data)) {
 			vif->has_rand_mac = true;
 			memcpy(vif->random_mac, sa->sa_data, ETH_ALEN);
-			memcpy(dev->dev_addr, sa->sa_data, ETH_ALEN);
+			memcpy((void *)dev->dev_addr, sa->sa_data, ETH_ALEN);
 		} else {
 			vif->has_rand_mac = false;
 			netdev_info(dev, "need clear random mac for sta/softap mode\n");
 			memset(vif->random_mac, 0, ETH_ALEN);
-			memcpy(dev->dev_addr, vif->mac, ETH_ALEN);
+			memcpy((void *)dev->dev_addr, vif->mac, ETH_ALEN);
 		}
 	}
 	/*return success to pass vts test*/
@@ -1444,7 +1444,7 @@ static struct sprdwl_vif *sprdwl_register_netdev(struct sprdwl_priv *priv,
 	ndev->features |= NETIF_F_SG;
 	SET_NETDEV_DEV(ndev, wiphy_dev(priv->wiphy));
 
-	sprdwl_set_mac_addr(vif, addr, ndev->dev_addr);
+	sprdwl_set_mac_addr(vif, addr, (unsigned char *)ndev->dev_addr);
 	ether_addr_copy(ndev->dev_addr_shadow, ndev->dev_addr);
 
 #ifdef CONFIG_P2P_INTF
@@ -1673,4 +1673,3 @@ MODULE_PARM_DESC(tcp_ack_drop_enable, "valid values: [0, 1]");
 #else
 const unsigned int tcp_ack_drop_enable;
 #endif
-

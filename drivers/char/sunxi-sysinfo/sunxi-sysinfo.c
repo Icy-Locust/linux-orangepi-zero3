@@ -122,7 +122,7 @@ static int sunxi_info_probe(struct platform_device *pdev)
 {
 	int i, ret = 0;
 
-	quirks = of_device_get_match_data(&pdev->dev);
+	quirks = (void *)of_device_get_match_data(&pdev->dev);
 	if (quirks == NULL) {
 		dev_err(&pdev->dev, "Failed to determine the quirks to use\n");
 		return -ENODEV;
