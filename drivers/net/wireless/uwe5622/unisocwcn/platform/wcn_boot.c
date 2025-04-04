@@ -1371,15 +1371,13 @@ static int marlin_registsr_bt_wake(struct device *dev)
 {
 	struct device_node *np;
 	int bt_wake_host_gpio, ret = 0;
-	struct gpio_config config;
 
 	np = of_find_compatible_node(NULL, NULL, "allwinner,sunxi-btlpm");
 	if (!np) {
 		WCN_ERR("dts node for bt_wake not found");
 		return -EINVAL;
 	}
-	bt_wake_host_gpio = of_get_named_gpio_flags(np, "bt_hostwake", 0,
-		(enum of_gpio_flags *)&config);
+	bt_wake_host_gpio = of_get_named_gpio(np, "bt_hostwake", 0);
 	if (!gpio_is_valid(bt_wake_host_gpio)) {
 		WCN_ERR("bt_hostwake irq is invalid: %d\n",
 			bt_wake_host_gpio);
@@ -1403,11 +1401,8 @@ static int marlin_registsr_bt_wake(struct device *dev)
 
 	marlin_dev->bt_wake_host_int_num = gpio_to_irq(bt_wake_host_gpio);
 
-	WCN_INFO("%s bt_hostwake gpio=%d mul-sel=%d pull=%d "
-		 "drv_level=%d data=%d intnum=%d\n",
-		 __func__, config.gpio, config.mul_sel, config.pull,
-		 config.drv_level, config.data,
-		 marlin_dev->bt_wake_host_int_num);
+	WCN_INFO("%s bt_hostwake gpio=%d intnum=%d\n", __func__,
+		 bt_wake_host_gpio, marlin_dev->bt_wake_host_int_num);
 
 	ret = device_init_wakeup(dev, true);
 	if (ret < 0) {
@@ -3867,7 +3862,7 @@ static int marlin_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int  marlin_remove(struct platform_device *pdev)
+static void marlin_remove(struct platform_device *pdev)
 {
 #if (defined(CONFIG_BT_WAKE_HOST_EN) && defined(CONFIG_AW_BOARD))
 	marlin_unregistsr_bt_wake();
@@ -3908,7 +3903,7 @@ static int  marlin_remove(struct platform_device *pdev)
 
 	WCN_INFO("marlin_remove ok!\n");
 
-	return 0;
+	return;
 }
 
 static void marlin_shutdown(struct platform_device *pdev)

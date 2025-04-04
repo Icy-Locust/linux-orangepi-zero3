@@ -394,7 +394,7 @@ int sprdwl_init_fw(struct sprdwl_vif *vif)
 	struct sprdwl_priv *priv = vif->priv;
 	enum nl80211_iftype type = vif->wdev.iftype;
 	enum sprdwl_mode mode;
-	u8 *mac;
+	const u8 *mac;
 	u8 vif_ctx_id = 0;
 
 	wl_ndev_log(L_DBG, vif->ndev, "%s type %d, mode %d\n", __func__, type,
@@ -964,9 +964,10 @@ err_start:
 
 static int sprdwl_cfg80211_change_beacon(struct wiphy *wiphy,
 					 struct net_device *ndev,
-					 struct cfg80211_beacon_data *beacon)
+					 struct cfg80211_ap_update *info)
 {
 	struct sprdwl_vif *vif = netdev_priv(ndev);
+	struct cfg80211_beacon_data *beacon = &(info->beacon);
 
 	wl_ndev_log(L_DBG, ndev, "%s\n", __func__);
 #ifdef DFS_MASTER
@@ -2866,6 +2867,7 @@ static void sprdwl_cfg80211_stop_p2p_device(struct wiphy *wiphy,
 
 static int sprdwl_cfg80211_tdls_mgmt(struct wiphy *wiphy,
 					 struct net_device *ndev, const u8 *peer,
+					 int link_id,
 					 u8 action_code, u8 dialog_token,
 					 u16 status_code,  u32 peer_capability,
 					 bool initiator, const u8 *buf, size_t len)
