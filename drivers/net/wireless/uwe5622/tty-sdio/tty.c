@@ -27,6 +27,7 @@
 #include <linux/atomic.h>
 #ifdef CONFIG_OF
 #include <linux/of_device.h>
+#include <linux/of.h>
 #endif
 #include <linux/compat.h>
 #include <linux/tty_flip.h>
@@ -467,8 +468,8 @@ static  int sdio_data_transmit(uint8_t *data, size_t count)
 	return mtty_write(NULL, data, count);
 }
 
-static int mtty_write_plus(struct tty_struct *tty,
-		  const unsigned char *buf, int count)
+static ssize_t mtty_write_plus(struct tty_struct *tty, const u8 *buf,
+			     size_t count)
 {
 	return sitm_write(buf, count, sdio_data_transmit);
 }
@@ -780,7 +781,7 @@ static void  mtty_shutdown(struct platform_device *pdev)
 }
 #endif
 
-static int  mtty_remove(struct platform_device *pdev)
+static void mtty_remove(struct platform_device *pdev)
 {
 	struct mtty_device *mtty = platform_get_drvdata(pdev);
 
@@ -799,7 +800,7 @@ static int  mtty_remove(struct platform_device *pdev)
 //#endif
 	bluesleep_exit();
 
-	return 0;
+	return;
 }
 
 static const struct of_device_id mtty_match_table[] = {
