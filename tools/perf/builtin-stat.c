@@ -528,26 +528,9 @@ static int enable_counters(void)
 			return err;
 	}
 
-	if (stat_config.initial_delay < 0) {
-		pr_info(EVLIST_DISABLED_MSG);
-		return 0;
-	}
-
-	if (stat_config.initial_delay > 0) {
-		pr_info(EVLIST_DISABLED_MSG);
-		usleep(stat_config.initial_delay * USEC_PER_MSEC);
-	}
-
-	/*
-	 * We need to enable counters only if:
-	 * - we don't have tracee (attaching to task or cpu)
-	 * - we have initial delay configured
-	 */
-	if (!target__none(&target) || stat_config.initial_delay) {
+	if (!target__enable_on_exec(&target)) {
 		if (!all_counters_use_bpf)
 			evlist__enable(evsel_list);
-		if (stat_config.initial_delay > 0)
-			pr_info(EVLIST_ENABLED_MSG);
 	}
 	return 0;
 }
@@ -773,16 +756,20 @@ static int __run_perf_stat(int argc, const char **argv, int run_idx)
 		evlist__set_leader(evsel_list);
 
 	if (!cpu_map__is_dummy(evsel_list->core.user_requested_cpus)) {
-		if (affinity__setup(&saved_affinity) < 0)
-			return -1;
+		if (affinity__setup(&saved_affinity) < 0) {
+			err = -1;
+			goto err_out;
+		}
 		affinity = &saved_affinity;
 	}
 
 	evlist__for_each_entry(evsel_list, counter) {
 		counter->reset_group = false;
-		if (bpf_counter__load(counter, &target))
-			return -1;
-		if (!evsel__is_bpf(counter))
+		if (bpf_counter__load(counter, &target)) {
+			err = -1;
+			goto err_out;
+		}
+		if (!(evsel__is_bperf(counter)))
 			all_counters_use_bpf = false;
 	}
 
@@ -798,7 +785,7 @@ static int __run_perf_stat(int argc, const char **argv, int run_idx)
 
 		if (counter->reset_group || counter->errored)
 			continue;
-		if (evsel__is_bpf(counter))
+		if (evsel__is_bperf(counter))
 			continue;
 try_again:
 		if (create_perf_stat_counter(counter, &stat_config, &target,
@@ -822,7 +809,8 @@ try_again:
 
 			switch (stat_handle_error(counter)) {
 			case COUNTER_FATAL:
-				return -1;
+				err = -1;
+				goto err_out;
 			case COUNTER_RETRY:
 				goto try_again;
 			case COUNTER_SKIP:
@@ -863,7 +851,8 @@ try_again_reset:
 
 				switch (stat_handle_error(counter)) {
 				case COUNTER_FATAL:
-					return -1;
+					err = -1;
+					goto err_out;
 				case COUNTER_RETRY:
 					goto try_again_reset;
 				case COUNTER_SKIP:
@@ -876,6 +865,7 @@ try_again_reset:
 		}
 	}
 	affinity__cleanup(affinity);
+	affinity = NULL;
 
 	evlist__for_each_entry(evsel_list, counter) {
 		if (!counter->supported) {
@@ -888,8 +878,10 @@ try_again_reset:
 			stat_config.unit_width = l;
 
 		if (evsel__should_store_id(counter) &&
-		    evsel__store_ids(counter, evsel_list))
-			return -1;
+		    evsel__store_ids(counter, evsel_list)) {
+			err = -1;
+			goto err_out;
+		}
 	}
 
 	if (evlist__apply_filters(evsel_list, &counter)) {
@@ -910,21 +902,39 @@ try_again_reset:
 		}
 
 		if (err < 0)
-			return err;
+			goto err_out;
 
 		err = perf_event__synthesize_stat_events(&stat_config, NULL, evsel_list,
 							 process_synthesized_event, is_pipe);
 		if (err < 0)
-			return err;
+			goto err_out;
+
 	}
 
-	err = enable_counters();
-	if (err)
-		return -1;
+	if (target.initial_delay) {
+		pr_info(EVLIST_DISABLED_MSG);
+	} else {
+		err = enable_counters();
+		if (err) {
+			err = -1;
+			goto err_out;
+		}
+	}
 
 	/* Exec the command, if any */
 	if (forks)
 		evlist__start_workload(evsel_list);
+
+	if (target.initial_delay > 0) {
+		usleep(target.initial_delay * USEC_PER_MSEC);
+		err = enable_counters();
+		if (err) {
+			err = -1;
+			goto err_out;
+		}
+
+		pr_info(EVLIST_ENABLED_MSG);
+	}
 
 	t0 = rdclock();
 	clock_gettime(CLOCK_MONOTONIC, &ref_time);
@@ -941,7 +951,8 @@ try_again_reset:
 		if (workload_exec_errno) {
 			const char *emsg = str_error_r(workload_exec_errno, msg, sizeof(msg));
 			pr_err("Workload failed: %s\n", emsg);
-			return -1;
+			err = -1;
+			goto err_out;
 		}
 
 		if (WIFSIGNALED(status))
@@ -990,6 +1001,13 @@ try_again_reset:
 		evlist__close(evsel_list);
 
 	return WEXITSTATUS(status);
+
+err_out:
+	if (forks)
+		evlist__cancel_workload(evsel_list);
+
+	affinity__cleanup(affinity);
+	return err;
 }
 
 static int run_perf_stat(int argc, const char **argv, int run_idx)
@@ -1023,7 +1041,7 @@ static void print_counters(struct timespec *ts, int argc, const char **argv)
 	/* Do not print anything if we record to the pipe. */
 	if (STAT_RECORD && perf_stat.data.is_pipe)
 		return;
-	if (stat_config.quiet)
+	if (quiet)
 		return;
 
 	evlist__print_counters(evsel_list, &stat_config, &target, ts, argc, argv);
@@ -1242,7 +1260,7 @@ static struct option stat_options[] = {
 		     "aggregate counts per thread", AGGR_THREAD),
 	OPT_SET_UINT(0, "per-node", &stat_config.aggr_mode,
 		     "aggregate counts per numa node", AGGR_NODE),
-	OPT_INTEGER('D', "delay", &stat_config.initial_delay,
+	OPT_INTEGER('D', "delay", &target.initial_delay,
 		    "ms to wait before starting measurement after program start (-1: start with events disabled)"),
 	OPT_CALLBACK_NOOPT(0, "metric-only", &stat_config.metric_only, NULL,
 			"Only print computed metrics. No raw values", enable_metric_only),
@@ -1273,8 +1291,8 @@ static struct option stat_options[] = {
 		       "print summary for interval mode"),
 	OPT_BOOLEAN(0, "no-csv-summary", &stat_config.no_csv_summary,
 		       "don't print 'summary' for CSV summary output"),
-	OPT_BOOLEAN(0, "quiet", &stat_config.quiet,
-			"don't print output (useful with record)"),
+	OPT_BOOLEAN(0, "quiet", &quiet,
+			"don't print any output, messages or warnings (useful with record)"),
 	OPT_CALLBACK(0, "cputype", &evsel_list, "hybrid cpu type",
 		     "Only enable events on applying cpu with this type "
 		     "for hybrid platform (e.g. core or atom)",
@@ -1448,7 +1466,7 @@ static int perf_stat_init_aggr_mode(void)
 	 * taking the highest cpu number to be the size of
 	 * the aggregation translate cpumap.
 	 */
-	if (evsel_list->core.user_requested_cpus)
+	if (!perf_cpu_map__empty(evsel_list->core.user_requested_cpus))
 		nr = perf_cpu_map__max(evsel_list->core.user_requested_cpus).cpu;
 	else
 		nr = 0;
@@ -2277,7 +2295,7 @@ int cmd_stat(int argc, const char **argv)
 		goto out;
 	}
 
-	if (!output && !stat_config.quiet) {
+	if (!output && !quiet) {
 		struct timespec tm;
 		mode = append_file ? "a" : "w";
 

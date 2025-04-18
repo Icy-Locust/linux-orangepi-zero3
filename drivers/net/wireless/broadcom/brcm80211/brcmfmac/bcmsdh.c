@@ -770,7 +770,7 @@ void brcmf_sdiod_sgtable_alloc(struct brcmf_sdio_dev *sdiodev)
 
 	nents = max_t(uint, BRCMF_DEFAULT_RXGLOM_SIZE,
 		      sdiodev->settings->bus.sdio.txglomsz);
-	nents += (nents >> 4) + 1;
+	nents *= 2;
 
 	WARN_ON(nents > sdiodev->max_segment_count);
 
@@ -991,15 +991,34 @@ static const struct sdio_device_id brcmf_sdmmc_ids[] = {
 MODULE_DEVICE_TABLE(sdio, brcmf_sdmmc_ids);
 
 
-static void brcmf_sdiod_acpi_set_power_manageable(struct device *dev,
-						  int val)
+static void brcmf_sdiod_acpi_save_power_manageable(struct brcmf_sdio_dev *sdiodev)
 {
 #if IS_ENABLED(CONFIG_ACPI)
 	struct acpi_device *adev;
 
-	adev = ACPI_COMPANION(dev);
+	adev = ACPI_COMPANION(&sdiodev->func1->dev);
 	if (adev)
-		adev->flags.power_manageable = 0;
+		sdiodev->func1_power_manageable = adev->flags.power_manageable;
+
+	adev = ACPI_COMPANION(&sdiodev->func2->dev);
+	if (adev)
+		sdiodev->func2_power_manageable = adev->flags.power_manageable;
+#endif
+}
+
+static void brcmf_sdiod_acpi_set_power_manageable(struct brcmf_sdio_dev *sdiodev,
+						  int enable)
+{
+#if IS_ENABLED(CONFIG_ACPI)
+	struct acpi_device *adev;
+
+	adev = ACPI_COMPANION(&sdiodev->func1->dev);
+	if (adev)
+		adev->flags.power_manageable = enable ? sdiodev->func1_power_manageable : 0;
+
+	adev = ACPI_COMPANION(&sdiodev->func2->dev);
+	if (adev)
+		adev->flags.power_manageable = enable ? sdiodev->func2_power_manageable : 0;
 #endif
 }
 
@@ -1009,7 +1028,6 @@ static int brcmf_ops_sdio_probe(struct sdio_func *func,
 	int err;
 	struct brcmf_sdio_dev *sdiodev;
 	struct brcmf_bus *bus_if;
-	struct device *dev;
 
 	brcmf_dbg(SDIO, "Enter\n");
 	brcmf_dbg(SDIO, "Class=%x\n", func->class);
@@ -1017,13 +1035,8 @@ static int brcmf_ops_sdio_probe(struct sdio_func *func,
 	brcmf_dbg(SDIO, "sdio device ID: 0x%04x\n", func->device);
 	brcmf_dbg(SDIO, "Function#: %d\n", func->num);
 
-	dev = &func->dev;
-
 	/* Set MMC_QUIRK_LENIENT_FN0 for this card */
 	func->card->quirks |= MMC_QUIRK_LENIENT_FN0;
-
-	/* prohibit ACPI power management for this device */
-	brcmf_sdiod_acpi_set_power_manageable(dev, 0);
 
 	/* Consume func num 1 but dont do anything with it. */
 	if (func->num == 1)
@@ -1055,6 +1068,7 @@ static int brcmf_ops_sdio_probe(struct sdio_func *func,
 	dev_set_drvdata(&sdiodev->func1->dev, bus_if);
 	sdiodev->dev = &sdiodev->func1->dev;
 
+	brcmf_sdiod_acpi_save_power_manageable(sdiodev);
 	brcmf_sdiod_change_state(sdiodev, BRCMF_SDIOD_DOWN);
 
 	brcmf_dbg(SDIO, "F2 found, calling brcmf_sdiod_probe...\n");
@@ -1120,6 +1134,8 @@ void brcmf_sdio_wowl_config(struct device *dev, bool enabled)
 
 	if (sdiodev->settings->bus.sdio.oob_irq_supported ||
 	    pm_caps & MMC_PM_WAKE_SDIO_IRQ) {
+		/* Stop ACPI from turning off the device when wowl is enabled */
+		brcmf_sdiod_acpi_set_power_manageable(sdiodev, !enabled);
 		sdiodev->wowl_enabled = enabled;
 		brcmf_dbg(SDIO, "Configuring WOWL, enabled=%d\n", enabled);
 		return;
@@ -1135,6 +1151,7 @@ static int brcmf_ops_sdio_suspend(struct device *dev)
 	struct brcmf_bus *bus_if;
 	struct brcmf_sdio_dev *sdiodev;
 	mmc_pm_flag_t sdio_flags;
+	bool cap_power_off;
 	int ret = 0;
 
 	func = container_of(dev, struct sdio_func, dev);
@@ -1142,19 +1159,23 @@ static int brcmf_ops_sdio_suspend(struct device *dev)
 	if (func->num != 1)
 		return 0;
 
+	cap_power_off = !!(func->card->host->caps & MMC_CAP_POWER_OFF_CARD);
 
 	bus_if = dev_get_drvdata(dev);
 	sdiodev = bus_if->bus_priv.sdio;
 
-	if (sdiodev->wowl_enabled) {
+	if (sdiodev->wowl_enabled || !cap_power_off) {
 		brcmf_sdiod_freezer_on(sdiodev);
 		brcmf_sdio_wd_timer(sdiodev->bus, 0);
 
 		sdio_flags = MMC_PM_KEEP_POWER;
-		if (sdiodev->settings->bus.sdio.oob_irq_supported)
-			enable_irq_wake(sdiodev->settings->bus.sdio.oob_irq_nr);
-		else
-			sdio_flags |= MMC_PM_WAKE_SDIO_IRQ;
+
+		if (sdiodev->wowl_enabled) {
+			if (sdiodev->settings->bus.sdio.oob_irq_supported)
+				enable_irq_wake(sdiodev->settings->bus.sdio.oob_irq_nr);
+			else
+				sdio_flags |= MMC_PM_WAKE_SDIO_IRQ;
+		}
 
 		if (sdio_set_host_pm_flags(sdiodev->func1, sdio_flags))
 			brcmf_err("Failed to set pm_flags %x\n", sdio_flags);
@@ -1176,18 +1197,19 @@ static int brcmf_ops_sdio_resume(struct device *dev)
 	struct brcmf_sdio_dev *sdiodev = bus_if->bus_priv.sdio;
 	struct sdio_func *func = container_of(dev, struct sdio_func, dev);
 	int ret = 0;
+	bool cap_power_off = !!(func->card->host->caps & MMC_CAP_POWER_OFF_CARD);
 
 	brcmf_dbg(SDIO, "Enter: F%d\n", func->num);
 	if (func->num != 2)
 		return 0;
 
-	if (!sdiodev->wowl_enabled) {
+	if (!sdiodev->wowl_enabled && cap_power_off) {
 		/* bus was powered off and device removed, probe again */
 		ret = brcmf_sdiod_probe(sdiodev);
 		if (ret)
 			brcmf_err("Failed to probe device on resume\n");
 	} else {
-		if (sdiodev->settings->bus.sdio.oob_irq_supported)
+		if (sdiodev->wowl_enabled && sdiodev->settings->bus.sdio.oob_irq_supported)
 			disable_irq_wake(sdiodev->settings->bus.sdio.oob_irq_nr);
 
 		brcmf_sdiod_freezer_off(sdiodev);

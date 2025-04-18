@@ -278,7 +278,6 @@ static int do_get_hw_stats(struct ib_device *ibdev,
 	const struct mlx5_ib_counters *cnts = get_counters(dev, port_num - 1);
 	struct mlx5_core_dev *mdev;
 	int ret, num_counters;
-	u32 mdev_port_num;
 
 	if (!stats)
 		return -EINVAL;
@@ -299,8 +298,9 @@ static int do_get_hw_stats(struct ib_device *ibdev,
 	}
 
 	if (MLX5_CAP_GEN(dev->mdev, cc_query_allowed)) {
-		mdev = mlx5_ib_get_native_port_mdev(dev, port_num,
-						    &mdev_port_num);
+		if (!port_num)
+			port_num = 1;
+		mdev = mlx5_ib_get_native_port_mdev(dev, port_num, NULL);
 		if (!mdev) {
 			/* If port is not affiliated yet, its in down state
 			 * which doesn't have any counters yet, so it would be
@@ -444,6 +444,7 @@ static int mlx5_ib_counter_bind_qp(struct rdma_counter *counter,
 				   struct ib_qp *qp)
 {
 	struct mlx5_ib_dev *dev = to_mdev(qp->device);
+	bool new = false;
 	int err;
 
 	if (!counter->id) {
@@ -458,6 +459,7 @@ static int mlx5_ib_counter_bind_qp(struct rdma_counter *counter,
 			return err;
 		counter->id =
 			MLX5_GET(alloc_q_counter_out, out, counter_set_id);
+		new = true;
 	}
 
 	err = mlx5_ib_qp_set_counter(qp, counter);
@@ -467,8 +469,10 @@ static int mlx5_ib_counter_bind_qp(struct rdma_counter *counter,
 	return 0;
 
 fail_set_counter:
-	mlx5_ib_counter_dealloc(counter);
-	counter->id = 0;
+	if (new) {
+		mlx5_ib_counter_dealloc(counter);
+		counter->id = 0;
+	}
 
 	return err;
 }
